@@ -36,6 +36,8 @@ class Task:
     frequency: str = "daily"        # "daily" | "weekly"
     completed: bool = False
     pet_name: str = ""              # which pet this task belongs to
+    preferred_time: str = ""        # when to do it, "HH:MM" (24-hour); "" = no preference
+    due_date: date | None = None    # which day this occurrence is for (None = unscheduled)
 
     def priority_score(self) -> int:
         """Numeric priority so the scheduler can sort (higher = more urgent)."""
@@ -48,6 +50,37 @@ class Task:
     def reset(self) -> None:
         """Clear completion (e.g. at the start of a new day)."""
         self.completed = False
+
+    def is_recurring(self) -> bool:
+        """Whether this task repeats and should respawn when completed.
+
+        True for "daily" and "weekly" tasks; False for one-off tasks
+        (any other frequency, e.g. "once").
+        """
+        return self.frequency in ("daily", "weekly")
+
+    def next_occurrence(self) -> "Task | None":
+        """Build the next occurrence of a recurring task (fresh, incomplete).
+
+        Returns a brand-new Task with its due_date advanced by one day
+        ("daily") or one week ("weekly"). Returns None for one-off tasks,
+        which don't repeat.
+        """
+        if not self.is_recurring():
+            return None
+
+        step = timedelta(days=1 if self.frequency == "daily" else 7)
+        base_date = self.due_date if self.due_date is not None else date.today()
+        return Task(
+            description=self.description,
+            duration_minutes=self.duration_minutes,
+            priority=self.priority,
+            frequency=self.frequency,
+            completed=False,               # the next one starts fresh
+            pet_name=self.pet_name,
+            preferred_time=self.preferred_time,
+            due_date=base_date + step,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +106,18 @@ class Pet:
     def pending_tasks(self) -> list[Task]:
         """Return only tasks that are not yet completed."""
         return [t for t in self.tasks if not t.completed]
+
+    def mark_task_complete(self, task: Task) -> Task | None:
+        """Complete a task and, if it recurs, queue its next occurrence.
+
+        The freshly created next occurrence is appended to this pet's task
+        list and also returned so callers can report/display it.
+        """
+        task.mark_complete()
+        next_task = task.next_occurrence()
+        if next_task is not None:
+            self.tasks.append(next_task)
+        return next_task
 
 
 # ---------------------------------------------------------------------------
@@ -107,6 +152,19 @@ class Owner:
         """All not-yet-completed tasks across every pet."""
         return [t for t in self.all_tasks() if not t.completed]
 
+    def mark_task_complete(self, task: Task) -> Task | None:
+        """Complete a task by delegating to the pet that owns it.
+
+        Finds the owning pet via task.pet_name so recurring tasks respawn on
+        the correct pet's list. Falls back to just completing the task if no
+        matching pet is found.
+        """
+        for pet in self.pets:
+            if pet.name == task.pet_name:
+                return pet.mark_task_complete(task)
+        task.mark_complete()
+        return None
+
 
 # ---------------------------------------------------------------------------
 # Scheduler output: Plan + ScheduledItem
@@ -132,6 +190,7 @@ class Plan:
     day: date
     scheduled_items: list[ScheduledItem] = field(default_factory=list)
     skipped: list[Task] = field(default_factory=list)  # didn't fit; explained below
+    warnings: list[str] = field(default_factory=list)  # e.g. time-conflict notices
 
     def total_minutes(self) -> int:
         """Total minutes of scheduled care."""
@@ -153,6 +212,8 @@ class Plan:
         for t in self.skipped:
             who = f"{t.pet_name}: " if t.pet_name else ""
             lines.append(f"  (skipped) {who}{t.description} — not enough time")
+        for warning in self.warnings:
+            lines.append(f"  [!] {warning}")
         return "\n".join(lines)
 
     def explain(self) -> str:
@@ -190,6 +251,87 @@ class Scheduler:
         self.available_minutes = available_minutes
         self.day_start = day_start
 
+    @staticmethod
+    def _to_minutes(preferred_time: str) -> int | None:
+        """Convert an 'HH:MM' string to minutes-since-midnight, or None if blank."""
+        if not preferred_time:
+            return None
+        hour, minute = (int(part) for part in preferred_time.split(":"))
+        return hour * 60 + minute
+
+    def detect_conflicts(self, tasks: list[Task]) -> list[str]:
+        """Return warning messages for tasks whose preferred times overlap.
+
+        Lightweight strategy: each pending task with a preferred_time becomes a
+        [start, end) interval (end = start + duration). Sort by start, then
+        compare each task to the next; if the next one begins before the
+        current one ends, their times clash. Tasks with no preferred_time
+        ("anytime") are ignored since they can slot in anywhere.
+
+        Returns an empty list when there are no conflicts — it never raises,
+        so callers can print the warnings and carry on.
+        """
+        timed = [
+            t for t in tasks
+            if not t.completed and self._to_minutes(t.preferred_time) is not None
+        ]
+        timed.sort(key=lambda t: self._to_minutes(t.preferred_time))
+
+        warnings: list[str] = []
+        for current, nxt in zip(timed, timed[1:]):
+            start_cur = self._to_minutes(current.preferred_time)
+            end_cur = start_cur + current.duration_minutes
+            start_nxt = self._to_minutes(nxt.preferred_time)
+            if start_nxt < end_cur:  # next task starts before current one ends
+                same_pet = current.pet_name == nxt.pet_name
+                who = (
+                    f"{current.pet_name}'s" if same_pet
+                    else f"{current.pet_name} and {nxt.pet_name}"
+                )
+                warnings.append(
+                    f"Time conflict: {who} '{current.description}' "
+                    f"({current.preferred_time}, {current.duration_minutes} min) "
+                    f"overlaps '{nxt.description}' ({nxt.preferred_time})."
+                )
+        return warnings
+
+    def sort_by_time(self, tasks: list[Task]) -> list[Task]:
+        """Return tasks ordered by their preferred_time ("HH:MM"), earliest first.
+
+        The key parses each "HH:MM" string into an (hour, minute) tuple so
+        sorting is correct even if hours aren't zero-padded ("9:00" vs "14:00").
+        Tasks with no preferred_time ("") sort to the end, since they can go
+        anywhere in the day.
+        """
+        def time_key(task: Task) -> tuple[int, int]:
+            if not task.preferred_time:
+                return (24, 0)  # no preference -> after any real clock time
+            hour, minute = (int(part) for part in task.preferred_time.split(":"))
+            return (hour, minute)
+
+        return sorted(tasks, key=time_key)
+
+    def filter_tasks(
+        self,
+        tasks: list[Task],
+        completed: bool | None = None,
+        pet_name: str | None = None,
+    ) -> list[Task]:
+        """Return the tasks matching the given filters.
+
+        Both filters are optional and combine with AND:
+        - completed=True/False keeps only done / not-done tasks (None = either).
+        - pet_name="Mochi" keeps only that pet's tasks (None = every pet).
+
+        Passing neither returns a copy of all tasks.
+        """
+        result = list(tasks)
+        if completed is not None:
+            result = [t for t in result if t.completed == completed]
+        if pet_name is not None:
+            result = [t for t in result if t.pet_name == pet_name]
+        return result
+
     def organize(self, tasks: list[Task]) -> list[Task]:
         """Drop completed tasks and sort by priority (desc), then duration (asc)."""
         pending = [t for t in tasks if not t.completed]
@@ -206,6 +348,8 @@ class Scheduler:
         """
         plan_day = day if day is not None else date.today()
         plan = Plan(day=plan_day)
+
+        plan.warnings = self.detect_conflicts(tasks)
 
         ordered = self.organize(tasks)
         used_minutes = 0

@@ -28,10 +28,18 @@ Give task a pet_name field, made this change because task has no idea what pet i
 - What constraints does your scheduler consider (for example: time, priority, preferences)?
 - How did you decide which constraints mattered most?
 
+My scheduler considers a few constraints: the total time budget for the day (available_minutes), each task's priority, how long each task takes (duration_minutes), and whether the task is already completed so finished tasks get dropped. It also looks at the owner's preferred_time for a task when it checks for conflicts, and it uses frequency (daily/weekly) to respawn recurring tasks after they are done. I decided priority mattered most because a pet owner cares more about important care like feeding and meds than optional stuff like brushing, so those get scheduled first. Time was the next most important constraint because there are only so many minutes in the day, so once the budget runs out the lower-priority tasks get skipped instead of forcing everything in. I put preferred_time lower in importance because it is more of a "nice to have" for the owner, which is why I used it for warnings rather than letting it override the priority ordering.
+
 **b. Tradeoffs**
 
 - Describe one tradeoff your scheduler makes.
 - Why is that tradeoff reasonable for this scenario?
+
+One tradeoff is that the scheduler separates conflict detection from actually placing the tasks. My detect_conflicts() method does check for real overlapping durations (it turns each task into a start/end interval using preferred_time + duration_minutes, not just exact time matches), so if a 30 min walk at 08:00 overlaps a vet call at 08:00 it warns me. But when build_schedule() makes the actual plan, it ignores preferred_time and just packs tasks back-to-back from day_start in priority order. So the plan itself never really double-books, but it also does not put tasks at the time the owner wanted. Instead of crashing or refusing to build, it just prints a warning message and still gives a full plan.
+
+This is reasonable for a pet owner because the point is to get a usable to-do list for the day without the program blowing up over a scheduling clash. The owner is a person who can look at the warning and decide which task to move, so a soft warning is more helpful than a hard error. It keeps the scheduler simple, which mattered for finishing the project, and I left honoring preferred_time in the plan as a clear next step if I had more time.
+
+A smaller related tradeoff: detect_conflicts() only compares each task to the next one after sorting, so if three tasks land on the same time I get two separate warnings instead of one combined message. I accepted that because the goal is just to alert the owner, not to produce a perfectly de-duplicated report.
 
 ---
 
