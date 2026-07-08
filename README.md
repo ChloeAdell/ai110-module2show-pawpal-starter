@@ -22,6 +22,36 @@ Your final app should:
 - Display the plan clearly (and ideally explain the reasoning)
 - Include tests for the most important scheduling behaviors
 
+## ✨ Features
+
+PawPal+ implements the following scheduling algorithms and behaviors (all in
+`pawpal_system.py`; see [Smarter Scheduling](#-smarter-scheduling) for details):
+
+- **Priority-based daily planning** — `Scheduler.organize()` drops completed
+  tasks and sorts the rest by priority (high → low), breaking ties by shortest
+  duration first. `Scheduler.build_schedule()` then packs them back-to-back from
+  the day's start time until the available-minutes budget runs out; anything that
+  doesn't fit is recorded as *skipped* rather than dropped silently.
+- **Sorting by time** — `Scheduler.sort_by_time()` orders tasks chronologically
+  by their `preferred_time` (`"HH:MM"`), correctly handling un-padded hours
+  (`"9:00"` before `"14:00"`) and sending "anytime" (blank) tasks to the end.
+- **Filtering** — `Scheduler.filter_tasks()` narrows a task list by completion
+  status and/or pet name, with the two filters combining as a logical AND.
+- **Conflict warnings** — `Scheduler.detect_conflicts()` treats each timed task
+  as a `[start, end)` interval and flags any overlap — including non-adjacent
+  overlaps (a long task colliding with a later one) and clashes across different
+  pets. It returns warning strings instead of raising, so the plan still builds.
+- **Daily & weekly recurrence** — completing a task via
+  `Pet.mark_task_complete()` / `Owner.mark_task_complete()` calls
+  `Task.next_occurrence()`, which spawns a fresh copy dated +1 day (daily) or
+  +7 days (weekly). One-off tasks don't respawn, completing a task twice won't
+  queue duplicates, and future-dated occurrences are kept out of today's plan.
+- **Explainable plans** — `Plan.display()` renders the schedule (with start
+  times, skipped tasks, and conflict warnings) and `Plan.explain()` states the
+  ordering rule and why any tasks were skipped.
+- **Multi-pet ownership** — an `Owner` aggregates tasks across all their pets
+  (`Owner.all_tasks()`) and routes completions to the correct pet.
+
 ## Getting started
 
 ### Setup
@@ -41,27 +71,6 @@ pip install -r requirements.txt
 5. Add tests to verify key behaviors.
 6. Connect your logic to the Streamlit UI in `app.py`.
 7. Refine UML so it matches what you actually built.
-
-## 🖥️ Sample Output
-
-Paste a sample of your app's CLI or Streamlit output here so a reader can see what a generated plan looks like:
-============================================
-Today's Schedule for Jordan
-Pets: Mochi, Luna
-Time budget: 120 minutes
-============================================
-Daily plan for 2026-07-07:
-  08:00 — Mochi: Breakfast (10 min) [priority: high]
-  08:10 — Luna: Feed (10 min) [priority: high]
-  08:20 — Mochi: Morning walk (30 min) [priority: high]
-  08:50 — Luna: Litter box (15 min) [priority: medium]
-  09:05 — Luna: Brush coat (20 min) [priority: low]
-  (skipped) Mochi: Fetch / play — not enough time
---------------------------------------------
-Tasks are ordered by priority (high first), then by shortest duration, and placed back-to-back until the day's time budget runs out.
-Scheduled 5 task(s) using 85 minutes.
-Skipped 1 task(s) because the day was full: Fetch / play.
-```
 
 ## 🧪 Testing PawPal+
 
@@ -168,12 +177,114 @@ to the pet's task list. One-off tasks return `None` and do not respawn.
 
 ## 📸 Demo Walkthrough
 
-Describe your app in numbered steps so a reader can follow along without watching a video:
+PawPal+ ships two front ends over the same `pawpal_system.py` logic: an
+interactive **Streamlit app** (`app.py`) and a scripted **terminal demo**
+(`main.py`).
 
-1. <!-- Describe this step -->
-2. <!-- Describe this step -->
-3. <!-- Describe this step -->
-4. <!-- Describe this step -->
-5. <!-- Add more steps as needed -->
+### The Streamlit app (`streamlit run app.py`)
 
-**Screenshot or video** *(optional)*: <!-- Insert a screenshot or link to a demo video here -->
+The UI is organized top-to-bottom into the actions a user performs:
+
+- **Owner** — set the owner's name.
+- **Pets** — add a pet (name + species: dog / cat / other) and see the current
+  list. Duplicate names are ignored.
+- **Tasks** — add a care task for a chosen pet with a description, duration,
+  priority, and an optional **preferred time** (`HH:MM`, validated). The task
+  list below has live controls: **filter by pet**, **filter by status**
+  (all / pending / completed), and a **sort by preferred time** toggle — these
+  call `Scheduler.filter_tasks()` and `Scheduler.sort_by_time()` directly. A
+  conflict banner (`Scheduler.detect_conflicts()`) appears above the table
+  whenever two timed tasks overlap.
+- **Build Schedule** — set the day's time budget and generate the plan. The
+  result renders as a table of start/end times, with `st.success` for the
+  summary and `st.warning` for conflicts and any skipped tasks.
+
+**Example workflow:**
+
+1. Enter the owner's name (e.g. *Jordan*).
+2. Add a pet — type `Mochi`, pick `dog`, click **Add pet**.
+3. Add a task — for `Mochi`, `Morning walk`, `30` minutes, `high`, preferred
+   time `08:00`; click **Add task**.
+4. Add a second, clashing task — `Luna`'s `Vet phone call` at `08:00`. The
+   conflict banner immediately warns that the two overlap.
+5. Toggle **Sort by preferred time** and switch the status filter to *Pending*
+   to see the tasks reorder chronologically.
+6. Set the time budget (e.g. `120` minutes) and click **Generate schedule** to
+   view today's plan, packed by priority and duration.
+
+### The terminal demo (`python main.py`)
+
+`main.py` builds a sample owner (Jordan) with two pets and seven tasks —
+deliberately entered out of order and with a built-in 08:00 conflict — then
+walks through every Scheduler behavior in sequence: the tasks **as entered**,
+**sorted by time**, the **conflict check**, a **filter to one pet**, marking
+recurring tasks complete (watch the **respawned future-dated occurrences**), and
+finally the **generated daily plan** with its explanation. Note how the plan only
+contains tasks due *today* — the +1-day and +7-day respawns are correctly held
+back.
+
+Sample output from a full run:
+
+```text
+====================================================
+Today's Schedule for Jordan
+Pets: Mochi, Luna
+Time budget: 120 minutes
+====================================================
+
+Tasks as entered (unsorted):
+  [ ] 2026-07-07   17:00  Mochi: Fetch / play (45 min, once)
+  [ ] 2026-07-07   08:00  Mochi: Morning walk (30 min, daily)
+  [ ] 2026-07-07    7:30  Mochi: Breakfast (10 min, daily)
+  [ ] 2026-07-07 anytime  Luna: Brush coat (20 min, weekly)
+  [ ] 2026-07-07   12:00  Luna: Litter box (15 min, daily)
+  [ ] 2026-07-07   07:45  Luna: Feed (10 min, daily)
+  [ ] 2026-07-07   08:00  Luna: Vet phone call (15 min, once)
+
+Sorted by time (earliest first):
+  [ ] 2026-07-07    7:30  Mochi: Breakfast (10 min, daily)
+  [ ] 2026-07-07   07:45  Luna: Feed (10 min, daily)
+  [ ] 2026-07-07   08:00  Mochi: Morning walk (30 min, daily)
+  [ ] 2026-07-07   08:00  Luna: Vet phone call (15 min, once)
+  [ ] 2026-07-07   12:00  Luna: Litter box (15 min, daily)
+  [ ] 2026-07-07   17:00  Mochi: Fetch / play (45 min, once)
+  [ ] 2026-07-07 anytime  Luna: Brush coat (20 min, weekly)
+
+Conflict check:
+  [!] Time conflict: Mochi and Luna 'Morning walk' (08:00, 30 min) overlaps 'Vet phone call' (08:00).
+
+Filtered to Mochi's tasks:
+  [ ] 2026-07-07    7:30  Mochi: Breakfast (10 min, daily)
+  [ ] 2026-07-07   08:00  Mochi: Morning walk (30 min, daily)
+  [ ] 2026-07-07   17:00  Mochi: Fetch / play (45 min, once)
+
+Completed 'Morning walk' (daily) -> next occurrence queued for 2026-07-08
+
+Completed 'Brush coat' (weekly) -> next occurrence queued for 2026-07-14
+
+Completed 'Fetch / play' (once) -> one-off, nothing to respawn
+
+Still pending (completed=False) - note the future-dated respawns:
+  [ ] 2026-07-07    7:30  Mochi: Breakfast (10 min, daily)
+  [ ] 2026-07-07   07:45  Luna: Feed (10 min, daily)
+  [ ] 2026-07-08   08:00  Mochi: Morning walk (30 min, daily)
+  [ ] 2026-07-07   08:00  Luna: Vet phone call (15 min, once)
+  [ ] 2026-07-07   12:00  Luna: Litter box (15 min, daily)
+  [ ] 2026-07-14 anytime  Luna: Brush coat (20 min, weekly)
+
+Already done (completed=True):
+  [x] 2026-07-07   17:00  Mochi: Fetch / play (45 min, once)
+  [x] 2026-07-07   08:00  Mochi: Morning walk (30 min, daily)
+  [x] 2026-07-07 anytime  Luna: Brush coat (20 min, weekly)
+
+----------------------------------------------------
+Daily plan for 2026-07-07:
+  08:00 — Mochi: Breakfast (10 min) [priority: high]
+  08:10 — Luna: Feed (10 min) [priority: high]
+  08:20 — Luna: Litter box (15 min) [priority: medium]
+  08:35 — Luna: Vet phone call (15 min) [priority: medium]
+----------------------------------------------------
+Tasks are ordered by priority (high first), then by shortest duration, and placed back-to-back until the day's time budget runs out.
+Scheduled 4 task(s) using 50 minutes.
+All tasks fit within the available time.
+```

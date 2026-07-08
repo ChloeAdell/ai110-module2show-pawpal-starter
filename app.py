@@ -75,6 +75,23 @@ else:
 
 st.divider()
 
+# A view-only scheduler for sorting/filtering/conflict-checking the task list.
+# available_minutes is irrelevant to those methods, so any value is fine here;
+# the real budget is set in the Build Schedule section below.
+view_scheduler = Scheduler(available_minutes=1)
+
+
+def _valid_time(text: str) -> bool:
+    """True for "" (anytime) or a well-formed 24-hour HH:MM string."""
+    if not text:
+        return True
+    parts = text.split(":")
+    if len(parts) != 2 or not (parts[0].isdigit() and parts[1].isdigit()):
+        return False
+    hour, minute = int(parts[0]), int(parts[1])
+    return 0 <= hour < 24 and 0 <= minute < 60
+
+
 # --- Scheduling a Task ----------------------------------------------------
 st.subheader("Tasks")
 st.caption("Add care tasks to a pet. These feed into the scheduler below.")
@@ -90,33 +107,73 @@ if pets:
     with col4:
         priority = st.selectbox("Priority", ["low", "medium", "high"], index=2)
 
-    if st.button("Add task"):
-        pet = next(p for p in pets if p.name == which_pet)
-        pet.add_task(
-            Task(
-                description=task_title,
-                duration_minutes=int(duration),
-                priority=Priority[priority.upper()],
-            )
-        )
-        st.success(f"Added '{task_title}' to {which_pet}.")
+    pref_time = st.text_input(
+        "Preferred time (HH:MM, 24-hour — leave blank for anytime)", value=""
+    )
 
-    # Show every pet's current tasks.
+    if st.button("Add task"):
+        if not _valid_time(pref_time.strip()):
+            st.warning("Preferred time must be blank or a valid HH:MM (e.g. 08:30).")
+        else:
+            pet = next(p for p in pets if p.name == which_pet)
+            pet.add_task(
+                Task(
+                    description=task_title,
+                    duration_minutes=int(duration),
+                    priority=Priority[priority.upper()],
+                    preferred_time=pref_time.strip(),
+                )
+            )
+            st.success(f"Added '{task_title}' to {which_pet}.")
+
+    # Show every pet's current tasks, with filter + sort controls that call
+    # straight into the Scheduler methods.
     all_tasks = owner.all_tasks()
     if all_tasks:
         st.write("Current tasks:")
-        st.table(
-            [
-                {
-                    "pet": t.pet_name,
-                    "task": t.description,
-                    "duration_minutes": t.duration_minutes,
-                    "priority": t.priority.name.lower(),
-                    "done": t.completed,
-                }
-                for t in all_tasks
-            ]
+
+        fcol1, fcol2, fcol3 = st.columns(3)
+        with fcol1:
+            pet_filter = st.selectbox("Filter by pet", ["All"] + [p.name for p in pets])
+        with fcol2:
+            status_filter = st.selectbox("Status", ["All", "Pending", "Completed"])
+        with fcol3:
+            sort_by_time = st.checkbox("Sort by preferred time", value=True)
+
+        completed_arg = {"All": None, "Pending": False, "Completed": True}[status_filter]
+        pet_arg = None if pet_filter == "All" else pet_filter
+
+        view = view_scheduler.filter_tasks(
+            all_tasks, completed=completed_arg, pet_name=pet_arg
         )
+        if sort_by_time:
+            view = view_scheduler.sort_by_time(view)
+
+        if view:
+            st.table(
+                [
+                    {
+                        "pet": t.pet_name,
+                        "task": t.description,
+                        "preferred_time": t.preferred_time or "anytime",
+                        "duration_minutes": t.duration_minutes,
+                        "priority": t.priority.name.lower(),
+                        "done": "✓" if t.completed else "",
+                    }
+                    for t in view
+                ]
+            )
+        else:
+            st.info("No tasks match these filters.")
+
+        # Conflict warnings run over ALL tasks (not the filtered view), so a
+        # cross-pet clash isn't hidden just because you're viewing one pet.
+        conflicts = view_scheduler.detect_conflicts(all_tasks)
+        if conflicts:
+            for warning in conflicts:
+                st.warning(warning)
+        else:
+            st.success("No time conflicts among tasks with a preferred time.")
     else:
         st.info("No tasks yet. Add one above.")
 else:
@@ -136,5 +193,35 @@ if st.button("Generate schedule"):
     else:
         scheduler = Scheduler(available_minutes=int(available))
         plan = scheduler.build_for(owner)
-        st.text(plan.display())
+
+        if plan.scheduled_items:
+            st.success(
+                f"Scheduled {len(plan.scheduled_items)} task(s) using "
+                f"{plan.total_minutes()} of {int(available)} minutes."
+            )
+            st.table(
+                [
+                    {
+                        "start": item.start_time.strftime("%H:%M"),
+                        "end": item.end_time().strftime("%H:%M"),
+                        "pet": item.task.pet_name,
+                        "task": item.task.description,
+                        "minutes": item.task.duration_minutes,
+                        "priority": item.task.priority.name.lower(),
+                    }
+                    for item in plan.scheduled_items
+                ]
+            )
+        else:
+            st.info("No tasks could be scheduled within the available time.")
+
+        # Conflict notices detected while building the plan.
+        for warning in plan.warnings:
+            st.warning(warning)
+
+        # Tasks that didn't fit the day's time budget.
+        if plan.skipped:
+            skipped = ", ".join(t.description for t in plan.skipped)
+            st.warning(f"Skipped (day full): {skipped}")
+
         st.caption(plan.explain())

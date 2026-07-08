@@ -1,0 +1,86 @@
+classDiagram
+    %% PawPal+ class diagram (final — matches pawpal_system.py)
+
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+    }
+
+    class Task {
+        +str description
+        +int duration_minutes
+        +Priority priority
+        +str frequency
+        +bool completed
+        +str pet_name
+        +str preferred_time
+        +date due_date
+        +priority_score() int
+        +mark_complete() void
+        +reset() void
+        +is_recurring() bool
+        +next_occurrence() Task
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +list~Task~ tasks
+        +add_task(task) void
+        +get_tasks() list~Task~
+        +pending_tasks() list~Task~
+        +mark_task_complete(task) Task
+    }
+
+    class Owner {
+        +str name
+        +list~Pet~ pets
+        +dict preferences
+        +add_pet(pet) void
+        +list_pets() list~Pet~
+        +all_tasks() list~Task~
+        +pending_tasks() list~Task~
+        +mark_task_complete(task) Task
+    }
+
+    class ScheduledItem {
+        +Task task
+        +time start_time
+        +end_time() time
+    }
+
+    class Plan {
+        +date day
+        +list~ScheduledItem~ scheduled_items
+        +list~Task~ skipped
+        +list~str~ warnings
+        +total_minutes() int
+        +display() str
+        +explain() str
+    }
+
+    class Scheduler {
+        +int available_minutes
+        +time day_start
+        -_to_minutes(preferred_time) int$
+        +detect_conflicts(tasks) list~str~
+        +sort_by_time(tasks) list~Task~
+        +filter_tasks(tasks, completed, pet_name) list~Task~
+        +organize(tasks) list~Task~
+        +build_schedule(tasks, day) Plan
+        +build_for(owner, day) Plan
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Owner ..> Pet : delegates mark_task_complete
+    Pet "1" --> "*" Task : has
+    Task --> Priority : uses
+    Task ..> Task : next_occurrence (recurring)
+    Scheduler --> Plan : produces
+    Scheduler ..> Task : schedules
+    Scheduler ..> Owner : build_for
+    Plan "1" --> "*" ScheduledItem : contains
+    Plan ..> "*" Task : skipped
+    ScheduledItem --> Task : wraps
