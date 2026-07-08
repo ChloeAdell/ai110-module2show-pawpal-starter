@@ -65,19 +65,53 @@ Skipped 1 task(s) because the day was full: Fetch / play.
 
 ## 🧪 Testing PawPal+
 
+Run the full test suite from the project root:
+
 ```bash
-# Run the full test suite:
-pytest
-
-# Run with coverage:
-pytest --cov
+python -m pytest
 ```
 
-Sample test output:
+The suite (`tests/test_pawpal.py`, 13 tests) covers the behaviors most likely to
+break the daily plan:
+
+- **Core task/pet basics** — completing a task flips its status; adding a task
+  grows the pet's list.
+- **Sorting** — `sort_by_time()` orders tasks chronologically and pushes
+  "anytime" (blank) tasks to the end, including un-padded hours (`"9:00"`).
+- **Filtering** — covered implicitly via the scheduling tests.
+- **Conflict detection** — same-time overlaps, partial overlaps, non-overlapping
+  and "anytime" tasks (no false positives), and **non-adjacent overlaps** (a long
+  task clashing with a later task, not just the next one).
+- **Recurring tasks** — daily respawns +1 day, weekly +7 days, one-off tasks
+  don't respawn, and completing a task twice doesn't queue a duplicate occurrence.
+- **Edge cases in the plan** — a respawned "tomorrow" occurrence is not scheduled
+  into today's plan, and a task whose duration exactly equals the remaining time
+  budget still fits (the boundary case).
+
+Sample output from a successful run:
 
 ```
-# Paste your pytest output here
+============================= test session starts =============================
+platform win32 -- Python 3.13.7, pytest-9.1.1, pluggy-1.6.0
+rootdir: C:\Users\beaut\ai110_project2\ai110-module2show-pawpal-starter
+plugins: anyio-4.14.1
+collected 13 items
+
+tests\test_pawpal.py .............                                       [100%]
+
+============================= 13 passed in 0.06s ==============================
 ```
+
+### Confidence Level: ★★★★☆ (4 / 5)
+
+All 13 tests pass, and the suite covers the core scheduling logic plus several
+edge cases that previously hid real bugs (respawned occurrences leaking into
+today's plan, non-adjacent conflicts going undetected, and duplicate respawns on
+double-completion) — each was verified to fail before its fix, so these tests are
+genuinely guarding behavior. Held back from 5 stars because a few known edge
+cases remain untested: malformed `preferred_time` strings (e.g. `"8"`) still
+raise, tasks that run past midnight wrap in `ScheduledItem.end_time()`, and the
+Streamlit UI in `app.py` has no automated coverage.
 
 ## 📐 Smarter Scheduling
 
@@ -115,9 +149,9 @@ Passing neither returns a copy of all tasks. This lets the UI show views like
 A lightweight overlap check that **returns a list of warning strings rather than
 raising**. Each pending, timed task becomes a `[start, end)` interval
 (`end = start + duration_minutes`); tasks are sorted by start time and each is
-compared to the next — if the next task begins before the current one ends, they
-clash. Same-time tasks are just the case where two intervals start at the same
-minute. It reports conflicts both within one pet and across different pets, and
+compared against every *later* task that begins before it ends — so a long task
+that overlaps a non-adjacent later task is still caught. Same-time tasks are just
+the case where two intervals start at the same minute. It reports conflicts both within one pet and across different pets, and
 the resulting warnings are attached to `Plan.warnings` and shown by
 `Plan.display()`. `Scheduler._to_minutes()` is the helper that converts `"HH:MM"`
 to minutes-since-midnight.

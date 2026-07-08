@@ -112,7 +112,12 @@ class Pet:
 
         The freshly created next occurrence is appended to this pet's task
         list and also returned so callers can report/display it.
+
+        No-op if the task was already completed, so completing it twice can't
+        queue duplicate future occurrences.
         """
+        if task.completed:
+            return None
         task.mark_complete()
         next_task = task.next_occurrence()
         if next_task is not None:
@@ -264,8 +269,9 @@ class Scheduler:
 
         Lightweight strategy: each pending task with a preferred_time becomes a
         [start, end) interval (end = start + duration). Sort by start, then
-        compare each task to the next; if the next one begins before the
-        current one ends, their times clash. Tasks with no preferred_time
+        compare each task against every *later* task that begins before it ends
+        — not just the immediately following one, so a long task that overlaps
+        a non-adjacent later task is still caught. Tasks with no preferred_time
         ("anytime") are ignored since they can slot in anywhere.
 
         Returns an empty list when there are no conflicts — it never raises,
@@ -278,11 +284,13 @@ class Scheduler:
         timed.sort(key=lambda t: self._to_minutes(t.preferred_time))
 
         warnings: list[str] = []
-        for current, nxt in zip(timed, timed[1:]):
+        for i, current in enumerate(timed):
             start_cur = self._to_minutes(current.preferred_time)
             end_cur = start_cur + current.duration_minutes
-            start_nxt = self._to_minutes(nxt.preferred_time)
-            if start_nxt < end_cur:  # next task starts before current one ends
+            for nxt in timed[i + 1:]:
+                start_nxt = self._to_minutes(nxt.preferred_time)
+                if start_nxt >= end_cur:
+                    break  # sorted by start, so nothing further can overlap either
                 same_pet = current.pet_name == nxt.pet_name
                 who = (
                     f"{current.pet_name}'s" if same_pet
@@ -349,9 +357,14 @@ class Scheduler:
         plan_day = day if day is not None else date.today()
         plan = Plan(day=plan_day)
 
-        plan.warnings = self.detect_conflicts(tasks)
+        # Only tasks meant for this day: unscheduled ones (due_date is None)
+        # slot in anywhere, but occurrences dated for another day (e.g. a
+        # recurring task's respawned "tomorrow" copy) must not leak in.
+        todays = [t for t in tasks if t.due_date is None or t.due_date == plan_day]
 
-        ordered = self.organize(tasks)
+        plan.warnings = self.detect_conflicts(todays)
+
+        ordered = self.organize(todays)
         used_minutes = 0
         cursor = datetime.combine(plan_day, self.day_start)
 

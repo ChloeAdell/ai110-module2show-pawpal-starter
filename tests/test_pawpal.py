@@ -2,7 +2,7 @@
 
 from datetime import date, timedelta
 
-from pawpal_system import Pet, Task, Priority, Scheduler
+from pawpal_system import Owner, Pet, Task, Priority, Scheduler
 
 
 def test_mark_complete_changes_status():
@@ -115,3 +115,69 @@ def test_detect_conflicts_catches_partial_overlap():
     feed = Task("Feed", 10, preferred_time="08:30", pet_name="Mochi")       # starts 08:30
 
     assert len(scheduler.detect_conflicts([walk, feed])) == 1
+
+
+def test_detect_conflicts_catches_non_adjacent_overlap():
+    """A long task must clash with a later task it overlaps, not just the next one.
+
+    Long walk (08:00, 180 min) runs until 11:00. Brush (08:30, 10 min) sits
+    between them but ends at 08:40, so it does NOT overlap the 09:00 Feed.
+    The walk still overlaps Feed, so that pair must be reported even though
+    they are not adjacent once the timed tasks are sorted by start.
+    """
+    scheduler = Scheduler(available_minutes=300)
+    walk = Task("Long walk", 180, preferred_time="08:00", pet_name="Mochi")  # ends 11:00
+    brush = Task("Brush", 10, preferred_time="08:30", pet_name="Mochi")      # ends 08:40
+    feed = Task("Feed", 15, preferred_time="09:00", pet_name="Mochi")        # inside walk
+
+    warnings = scheduler.detect_conflicts([walk, brush, feed])
+
+    # walk↔brush and walk↔feed both overlap; brush↔feed do not.
+    assert len(warnings) == 2
+    assert any("Feed" in w for w in warnings), "non-adjacent walk↔Feed overlap missed"
+
+
+def test_completing_task_twice_does_not_duplicate_next_occurrence():
+    """Completing an already-done recurring task must not queue a second copy."""
+    pet = Pet(name="Mochi", species="dog")
+    today = date(2026, 7, 7)
+    pet.add_task(Task("Walk", 30, frequency="daily", due_date=today))
+
+    first = pet.mark_task_complete(pet.tasks[0])   # spawns tomorrow's Walk
+    second = pet.mark_task_complete(pet.tasks[0])  # already done -> no-op
+
+    assert first is not None
+    assert second is None                          # nothing spawned the 2nd time
+    assert len(pet.tasks) == 2                      # original + exactly one respawn
+
+
+def test_respawned_occurrence_not_scheduled_on_original_day():
+    """Completing a daily task must not drop tomorrow's occurrence into today's plan."""
+    today = date(2026, 7, 7)
+    pet = Pet(name="Mochi", species="dog")
+    pet.add_task(Task("Walk", 30, frequency="daily", due_date=today))
+    owner = Owner(name="Alex", pets=[pet])
+
+    owner.mark_task_complete(pet.tasks[0])         # queues Walk due 2026-07-08
+    plan = Scheduler(available_minutes=120).build_for(owner, day=today)
+
+    # Original is complete (dropped); the respawn is dated tomorrow (out of range).
+    assert [item.task.description for item in plan.scheduled_items] == []
+
+
+def test_build_schedule_fills_budget_exactly():
+    """A task whose duration exactly equals the remaining budget still fits."""
+    today = date(2026, 7, 7)
+    scheduler = Scheduler(available_minutes=40)
+    tasks = [
+        Task("Walk", 30, priority=Priority.HIGH, due_date=today),   # 30 of 40 used
+        Task("Feed", 10, priority=Priority.MEDIUM, due_date=today),  # exactly fills to 40
+        Task("Brush", 1, priority=Priority.LOW, due_date=today),     # 1 over -> skipped
+    ]
+
+    plan = scheduler.build_schedule(tasks, day=today)
+
+    scheduled = [item.task.description for item in plan.scheduled_items]
+    assert scheduled == ["Walk", "Feed"]           # exact fit accepted
+    assert plan.total_minutes() == 40
+    assert [t.description for t in plan.skipped] == ["Brush"]
