@@ -15,6 +15,7 @@ classDiagram
         +add_pet(pet) void
         +list_pets() list~Pet~
         +all_tasks() list~Task~
+        +pending_tasks() list~Task~
     }
 
     class Pet {
@@ -23,32 +24,42 @@ classDiagram
         +list~Task~ tasks
         +add_task(task) void
         +get_tasks() list~Task~
+        +pending_tasks() list~Task~
     }
 
     class Task {
-        +str title
+        +str description
         +int duration_minutes
         +Priority priority
+        +str frequency
+        +bool completed
         +str pet_name
         +priority_score() int
+        +mark_complete() void
+        +reset() void
     }
 
     class ScheduledItem {
         +Task task
         +time start_time
+        +end_time() time
     }
 
     class Scheduler {
         +int available_minutes
-        +build_schedule(tasks) Plan
+        +time day_start
+        +organize(tasks) list~Task~
+        +build_schedule(tasks, day) Plan
+        +build_for(owner, day) Plan
     }
 
     class Plan {
         +date day
         +list~ScheduledItem~ scheduled_items
         +list~Task~ skipped
-        +explain() str
+        +total_minutes() int
         +display() str
+        +explain() str
     }
 
     Owner "1" --> "*" Pet : owns
