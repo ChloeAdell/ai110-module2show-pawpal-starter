@@ -1,0 +1,60 @@
+classDiagram
+    %% PawPal+ class diagram (draft)
+
+    class Priority {
+        <<enumeration>>
+        LOW
+        MEDIUM
+        HIGH
+    }
+
+    class Owner {
+        +str name
+        +list~Pet~ pets
+        +dict preferences
+        +add_pet(pet) void
+        +list_pets() list~Pet~
+        +all_tasks() list~Task~
+    }
+
+    class Pet {
+        +str name
+        +str species
+        +list~Task~ tasks
+        +add_task(task) void
+        +get_tasks() list~Task~
+    }
+
+    class Task {
+        +str title
+        +int duration_minutes
+        +Priority priority
+        +str pet_name
+        +priority_score() int
+    }
+
+    class ScheduledItem {
+        +Task task
+        +time start_time
+    }
+
+    class Scheduler {
+        +int available_minutes
+        +build_schedule(tasks) Plan
+    }
+
+    class Plan {
+        +date day
+        +list~ScheduledItem~ scheduled_items
+        +list~Task~ skipped
+        +explain() str
+        +display() str
+    }
+
+    Owner "1" --> "*" Pet : owns
+    Pet "1" --> "*" Task : has
+    Task --> Priority : uses
+    Scheduler --> Plan : produces
+    Scheduler ..> Task : schedules
+    Plan "1" --> "*" ScheduledItem : contains
+    ScheduledItem --> Task : wraps
